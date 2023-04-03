@@ -1,0 +1,163 @@
+cmake_minimum_required(VERSION 3.8)
+project(duna_slam)
+
+if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  add_compile_options(-Wall -Wextra -Wpedantic)
+endif()
+
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+set(CMAKE_BUILD_TYPE Release)
+
+# find dependencies
+find_package(ament_cmake REQUIRED)
+# uncomment the following section in order to fill in
+# further dependencies manually.
+# find_package(<dependency> REQUIRED)
+
+find_package(rclcpp REQUIRED)
+find_package(rclcpp_lifecycle REQUIRED)
+find_package(PCL 1.12.1 REQUIRED COMPONENTS
+    io
+    common
+    registration)
+link_libraries(${PCL_LIBRARIES})
+find_package(Eigen3 REQUIRED)
+find_package(sensor_msgs REQUIRED)
+link_libraries(Eigen3::Eigen)
+find_package(OpenCV)
+find_package(OpenMP)
+find_package(tf2_ros REQUIRED)
+find_package(tf2 REQUIRED)
+find_package(pcl_conversions REQUIRED)
+find_package(cv_bridge REQUIRED)
+find_package(rosbag2_cpp REQUIRED)
+find_package(duna_slam_interfaces REQUIRED)
+find_package(jsoncpp REQUIRED)
+# Make sure `duna_optimizer` and `duna-cloud-tools` are found by CMAKE. Possibly append `$CMAKE_PREFIX_PATH` ENV var or install to system.
+find_package(duna_optimizer REQUIRED)
+find_package(duna-cloud-tools REQUIRED CONFIG COMPONENTS filters)
+
+include_directories(include)
+
+# Jsoncpp
+get_target_property(JSON_INC_PATH jsoncpp_lib INTERFACE_INCLUDE_DIRECTORIES)
+include_directories(${JSON_INC_PATH})
+
+# Imu CPP driver
+add_library(imu_driver src/driver/imu_driver.cpp)
+ament_target_dependencies(imu_driver rclcpp sensor_msgs duna_slam_interfaces)
+target_include_directories(imu_driver PUBLIC ${duna_slam_interfaces_INCLUDE_DIRS})
+
+# Imu Cpp Node
+add_library(imu_node src/imu_node.cpp)
+target_link_libraries(imu_node imu_driver)
+
+add_library(slam_processor 
+lib/imu_processor.cpp
+lib/lidar_processor.cpp
+lib/laser_undistorter.cpp
+lib/pose_estimator.cpp
+lib/map_builder.cpp
+lib/sensor_synchronizer.cpp
+lib/slam_processor.cpp
+lib/slam_parameters.cpp
+lib/slam_exception.cpp
+)
+ament_target_dependencies(slam_processor rclcpp rclcpp_lifecycle duna_slam_interfaces std_msgs sensor_msgs tf2_ros tf2 PCL pcl_conversions)
+target_link_libraries(slam_processor duna::duna_optimizer duna-cloud-tools::filters)
+
+# Slam Node
+add_executable(slam_processor_node src/slam_processor_node.cpp)
+target_link_libraries(slam_processor_node slam_processor)
+
+# Laser Texture
+add_library(laser_texture SHARED src/laser_texture.cpp)
+ament_target_dependencies(laser_texture rclcpp rclcpp_components) 
+rclcpp_components_register_node(laser_texture
+  PLUGIN "duna_slam::LaserTexture"
+  EXECUTABLE laser_texture_node
+)
+
+# Bag recorder
+add_library(bag_recorder SHARED src/bag_recorder.cpp src/bag_recorder_helper.cpp)
+ament_target_dependencies(bag_recorder rclcpp rclcpp_components sensor_msgs cv_bridge rosbag2_cpp duna_slam_interfaces) 
+rclcpp_components_register_node(bag_recorder
+  PLUGIN "duna_slam::bag_recorder"
+  EXECUTABLE bag_recorder_node
+)
+target_link_libraries(bag_recorder jsoncpp_lib)
+
+# Web Publisher
+add_library(web_publisher SHARED src/web_publisher.cpp)
+ament_target_dependencies(web_publisher rclcpp rclcpp_components sensor_msgs pcl_conversions)
+rclcpp_components_register_node(web_publisher
+  PLUGIN "duna_slam::web_publisher"
+  EXECUTABLE web_publisher_node
+)
+
+install(TARGETS
+slam_processor_node
+bag_recorder_node
+web_publisher_node
+DESTINATION lib/${PROJECT_NAME})
+
+install(TARGETS
+bag_recorder
+web_publisher
+laser_texture
+LIBRARY DESTINATION lib)  
+
+# Config files
+install(DIRECTORY
+config
+rviz
+camera_config
+DESTINATION share/${PROJECT_NAME}/
+)
+
+# Launch files
+install(DIRECTORY
+  launch
+  DESTINATION share/${PROJECT_NAME}/
+)
+
+# Install Python modules. NOTE: https://github.com/ros2/rosidl_python/issues/141
+ament_python_install_package(${PROJECT_NAME})
+
+install(PROGRAMS
+  scripts/bno055_node.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+if(BUILD_TESTING)
+  find_package(ament_lint_auto REQUIRED)
+  # the following line skips the linter which checks for copyrights
+  # comment the line when a copyright and license is added to all source files
+  set(ament_cmake_copyright_FOUND TRUE)
+  # the following line skips cpplint (only works in a git repo)
+  # comment the line when this package is in a git repo and when
+  # a copyright and license is added to all source files
+  set(ament_cmake_cpplint_FOUND TRUE)
+
+  # removed linting stuff for now
+  # ament_lint_auto_find_test_dependencies()
+
+  # C++ tests
+  find_package(ament_cmake_gtest)
+
+  ament_add_gtest(
+    test_voxel_max
+    tst/test_voxel_max.cpp
+  )
+  target_link_libraries(test_voxel_max slam_processor)
+  
+  # Python tests (not very well documented in ros docs..)
+  find_package(ament_cmake_pytest)
+  ament_add_pytest_test(
+    test_bno
+    tst/test_bno.py
+  )
+
+endif()
+
+ament_package()
